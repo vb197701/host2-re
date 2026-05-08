@@ -3,7 +3,6 @@ name: Host2Play Auto Renew
 on:
   workflow_dispatch:
   schedule:
-    # 每天 0:00 / 8:00 / 16:00 UTC 运行，错开整点高峰
     - cron: "21 5,11,17,23 * * *"
 
 permissions:
@@ -16,18 +15,18 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout Public Repo
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Checkout Private Script
         uses: actions/checkout@v4
         with:
-          # 你需要在 Secrets 中添加 PRIVATE_REPO_NAME (如: your_username/Host2Play-Renew-Private)
+          # 需在 Secrets 中配置 PRIVATE_REPO_NAME (如: username/Host2Play-Renew-Private)
           repository: ${{ secrets.PRIVATE_REPO_NAME }}
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: private_script
 
-      - name: Setup Official WARP Proxy
+      - name: Setup WARP Proxy
         run: |
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [arch=amd64 signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ jammy main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
@@ -45,22 +44,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xvfb ffmpeg
 
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python Packages
         run: |
-          pip install seleniumbase SpeechRecognition pydub
-          # 提前安装内置浏览器，防止脚本运行时卡在下载
+          pip install seleniumbase SpeechRecognition
           sbase install chromium
 
-      - name: Run Python Script
+      - name: Run Script
         env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # 关键：告诉脚本去使用刚才建立的 WARP 隧道 (默认端口40000)
+          # 这里的变量名与 python 中的 os.getenv 严格一一对应
+          TG_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           PROXY: "socks5://127.0.0.1:40000"
         run: |
           mkdir -p screenshots
@@ -69,19 +67,18 @@ jobs:
           curl -s -x socks5://127.0.0.1:40000 https://api.ipify.org || echo "⚠️ IP获取失败"
           echo ""
 
-          # 使用 xvfb-run 直接包裹执行环境，这是最稳妥的无头显示方案
+          # 使用 xvfb-run 虚拟桌面运行私有仓库拉取下来的 python 脚本
           xvfb-run -a python private_script/renew.py
 
-      - name: Upload Error Reports
+      - name: Upload Screenshots
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: debug-screenshots
           path: screenshots/**
           if-no-files-found: ignore
-          compression-level: 6
 
-      - name: KeepAlive Commits
+      - name: KeepAlive
         if: always()
         run: |
           git config user.name "github-actions[bot]"
