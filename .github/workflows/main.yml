@@ -1,0 +1,90 @@
+name: Auto Renew
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天 0:00 / 8:00 / 16:00 UTC，间隔约 8 小时
+    - cron: "21 5,11,17,23 * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  renew:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/Host2Play-Renew-Private
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: scripts
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies & Chrome
+        working-directory: scripts
+        run: |
+          sudo apt-get update
+          # ✅ 核心：加回 ffmpeg，这是音频处理必须的
+          sudo apt-get install -y xvfb unzip curl jq p7zip-full ffmpeg
+          
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Start the GOST proxy forwarding
+        if: ${{ env.GOST_PROXY != '' }}
+        env:
+          GOST_PROXY: ${{ secrets.GOST_PROXY }}
+        working-directory: scripts
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
+          tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
+          chmod +x gost
+          nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
+          sleep 3
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org | sed 's/^\([0-9]*\)\..*/\1.***/'
+
+      - name: Install Python dependencies
+        working-directory: scripts
+        run: |
+          python -m pip install --upgrade pip
+          # ✅ 核心：替换依赖为 seleniumbase 和语音识别库
+          pip install seleniumbase SpeechRecognition requests
+
+      - name: Run Python renew script
+        working-directory: scripts
+        env:
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PROXY: ${{ secrets.GOST_PROXY != '' && '127.0.0.1:8080' || '' }}
+        run: python renew.py
+
+      - name: Upload Error Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-reports
+          # ✅ 对应 Python 脚本生成的截图目录
+          path: scripts/screenshots/*.png
+          if-no-files-found: ignore
+          compression-level: 6
+
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        if: always()
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 2
